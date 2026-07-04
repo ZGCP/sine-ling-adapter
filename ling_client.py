@@ -9,7 +9,7 @@ class LingApiClient:
         self.client = httpx.AsyncClient(timeout=30.0)
     
     async def close(self):
-        await self.client.close()
+        await self.client.aclose()
     
     def _headers(self, token: Optional[str] = None) -> Dict[str, str]:
         headers = {
@@ -55,6 +55,21 @@ class LingApiClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    async def get_redirect_url(self, path: str, token: Optional[str] = None, version: str = "v2") -> Optional[str]:
+        """获取重定向URL，不跟随重定向"""
+        base = self.base_v2 if version == "v2" else self.base_v1
+        url = f"{base}{path}"
+        try:
+            resp = await self.client.get(url, headers=self._headers(token), follow_redirects=False)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                return resp.headers.get("location", "")
+            # 如果不是重定向，但状态码正常，可能直接返回了文件
+            if resp.status_code == 200:
+                return url
+            return None
+        except Exception as e:
+            return None
+
     def _parse_response(self, resp: httpx.Response) -> Dict[str, Any]:
         result = {
             "status_code": resp.status_code,
