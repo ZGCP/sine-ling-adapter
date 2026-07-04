@@ -91,9 +91,9 @@ async def app_list(
     params = {"page": page, "limit": 20}
     
     if keyword:
-        result = await ling_api.get("/apps", params={"q": keyword, "page": page, "limit": 20})
+        result = await ling_api.get("/apps", version="v1", params={"q": keyword, "page": page, "limit": 20})
     elif packagename:
-        result = await ling_api.get("/apps", params={"packageName": packagename, "page": page, "limit": 20})
+        result = await ling_api.get("/apps", version="v1", params={"packageName": packagename, "page": page, "limit": 20})
         if result.get("success"):
             data = result.get("data", {})
             apps = data.get("apps", [])
@@ -103,12 +103,10 @@ async def app_list(
         return make_list_response([], 0, page, 20)
     elif userid:
         user_str_id = id_mapper.to_string(userid)
-        result = await ling_api.get(f"/users/{user_str_id}/apps", params={"page": page, "limit": 20})
+        result = await ling_api.get(f"/users/{user_str_id}/apps", version="v1", params={"page": page, "limit": 20})
     elif appid:
-        # 灵API没有相关应用接口，返回空列表
         return make_list_response([], 0, page, 20)
     elif type:
-        # V2.3.6 传的 type 是中文分类名，需要反向映射成英文
         cn_to_en = {
             "社交": "Social", "游戏": "Games", "工具": "Tools", "影音": "Media",
             "新闻": "News", "个性": "Personalization", "办公": "Productivity",
@@ -119,16 +117,16 @@ async def app_list(
         }
         en_category = cn_to_en.get(type, type)
         params["category"] = en_category
-        result = await ling_api.get("/apps", params=params)
+        result = await ling_api.get("/apps", version="v1", params=params)
     elif time:
         params["sort"] = "createdAt"
         params["order"] = "desc"
-        result = await ling_api.get("/apps", params=params)
+        result = await ling_api.get("/apps", version="v1", params=params)
     else:
         if time == "new":
             params["sort"] = "createdAt"
             params["order"] = "desc"
-        result = await ling_api.get("/apps", params=params)
+        result = await ling_api.get("/apps", version="v1", params=params)
     
     if not result.get("success"):
         return make_response(None, -1, result.get("error", "请求失败"))
@@ -144,7 +142,7 @@ async def app_list(
 @app.get("/api/app/info")
 async def app_info(appid: int):
     app_str_id = id_mapper.to_string(appid)
-    result = await ling_api.get(f"/apps/{app_str_id}")
+    result = await ling_api.get(f"/apps/{app_str_id}", version="v1")
     
     if not result.get("success"):
         return make_response(None, -1, "应用不存在")
@@ -164,31 +162,16 @@ async def download_app(appid: int, request: Request):
     token = extract_token(request)
     app_str_id = id_mapper.to_string(appid)
     
-    # 用灵API的下载端点获取重定向URL
-    redirect_url = await ling_api.get_redirect_url(f"/apps/{app_str_id}/download", token=token)
+    # 参考 lingdate 的下载URL格式: /download/{appId}?token={token}
+    if token:
+        download_url = f"{settings.LING_DOWNLOAD_BASE}/download/{app_str_id}?token={token}"
+    else:
+        download_url = f"{settings.LING_DOWNLOAD_BASE}/download/{app_str_id}"
     
-    if redirect_url:
-        lines = [
-            {"id": 1, "name": "官方线路", "url": redirect_url},
-        ]
-        return make_response(lines)
-    
-    # 备用方案：从应用详情中获取apkKey构造下载链接
-    result = await ling_api.get(f"/apps/{app_str_id}", token=token)
-    if result.get("success"):
-        data = result.get("data", {})
-        app_data = data.get("app", data)
-        apk_key = app_data.get("apkKey", "")
-        
-        if apk_key:
-            # 尝试构造下载URL
-            download_url = f"https://market.ziling.xin/api/v2/apps/{app_str_id}/download"
-            lines = [
-                {"id": 1, "name": "官方线路", "url": download_url},
-            ]
-            return make_response(lines)
-    
-    return make_response(None, -1, "获取下载链接失败")
+    lines = [
+        {"id": 1, "name": "官方线路", "url": download_url},
+    ]
+    return make_response(lines)
 
 @app.get("/api/download/app_share")
 async def app_share(appid: int):
@@ -216,7 +199,7 @@ async def app_check(request: Request):
         pkg_name = pkg.get("package_name", pkg.get("packageName", ""))
         old_version = int(pkg.get("version_code", pkg.get("versionCode", 0)))
         
-        resp = await ling_api.get("/apps", params={"packageName": pkg_name, "page": 1, "limit": 1})
+        resp = await ling_api.get("/apps", version="v1", params={"packageName": pkg_name, "page": 1, "limit": 1})
         if resp.get("success"):
             data = resp.get("data", {})
             apps_list = data.get("apps", data.get("items", []))
@@ -258,7 +241,7 @@ async def tag_list():
 
 @app.get("/api/page/list")
 async def page_list(page: int = 1):
-    result = await ling_api.get("/collections", params={"page": page, "limit": 20})
+    result = await ling_api.get("/collections", version="v1", params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -274,7 +257,7 @@ async def page_list(page: int = 1):
 @app.get("/api/page/info")
 async def page_info(id: int):
     str_id = id_mapper.to_string(id)
-    result = await ling_api.get(f"/collections/{str_id}")
+    result = await ling_api.get(f"/collections/{str_id}", version="v1")
     
     if not result.get("success"):
         return make_response(None, -1, "专题不存在")
@@ -293,10 +276,11 @@ async def user_login(request: Request):
     username = body.get("username", body.get("user", ""))
     password = body.get("password", "")
     
-    result = await ling_api.post("/auth/login", data={"username": username, "password": password})
+    result = await ling_api.post("/auth/login", version="v1", data={"username": username, "password": password})
     
     if not result.get("success"):
-        return make_response(None, -1, "登录失败")
+        msg = result.get("data", {}).get("message", "登录失败") if isinstance(result.get("data"), dict) else "登录失败"
+        return make_response(None, -1, msg)
     
     data = result.get("data", {})
     token = data.get("token", "")
@@ -316,10 +300,10 @@ async def user_register(request: Request):
     if qq:
         register_data["qq"] = qq
     
-    result = await ling_api.post("/auth/register", data=register_data)
+    result = await ling_api.post("/auth/register", version="v1", data=register_data)
     
     if not result.get("success"):
-        msg = result.get("data", {}).get("message", "注册失败")
+        msg = result.get("data", {}).get("message", "注册失败") if isinstance(result.get("data"), dict) else "注册失败"
         return make_response(None, -1, msg)
     
     data = result.get("data", {})
@@ -332,7 +316,7 @@ async def user_info(request: Request, id: Optional[int] = None):
     
     if id:
         user_str_id = id_mapper.to_string(id)
-        result = await ling_api.get(f"/users/{user_str_id}")
+        result = await ling_api.get(f"/users/{user_str_id}", version="v1")
         if result.get("success"):
             data = result.get("data", {})
             user_data = data.get("user", data)
@@ -347,7 +331,7 @@ async def user_info(request: Request, id: Optional[int] = None):
     if not token:
         return make_response(None, -1, "未登录")
     
-    result = await ling_api.get("/users/profile", token=token)
+    result = await ling_api.get("/users/profile", version="v1", token=token)
     
     if not result.get("success"):
         return make_response(None, -1, "获取用户信息失败")
@@ -372,7 +356,7 @@ async def user_edit(request: Request):
     if body.get("describe"):
         edit_data["description"] = body["describe"]
     
-    result = await ling_api.put("/users/profile", token=token, data=edit_data)
+    result = await ling_api.put("/users/profile", version="v1", token=token, data=edit_data)
     
     if not result.get("success"):
         return make_response(None, -1, "修改失败")
@@ -392,7 +376,7 @@ async def user_password(request: Request):
     old_password = body.get("old", "")
     new_password = body.get("new", "")
     
-    result = await ling_api.put("/users/password", token=token, data={
+    result = await ling_api.put("/users/password", version="v1", token=token, data={
         "currentPassword": old_password,
         "newPassword": new_password
     })
@@ -428,14 +412,14 @@ async def user_upload(request: Request, page: int = 1):
     if not token:
         return make_list_response([], 0, page, 20)
     
-    profile_result = await ling_api.get("/users/profile", token=token)
+    profile_result = await ling_api.get("/users/profile", version="v1", token=token)
     if not profile_result.get("success"):
         return make_list_response([], 0, page, 20)
     
     user_data = profile_result.get("data", {}).get("user", {})
     user_id = user_data.get("_id", "")
     
-    result = await ling_api.get(f"/users/{user_id}/apps", params={"page": page, "limit": 20})
+    result = await ling_api.get(f"/users/{user_id}/apps", version="v1", params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -458,12 +442,11 @@ async def user_favourite(
     
     if userid:
         user_str_id = id_mapper.to_string(userid)
-        result = await ling_api.get(f"/users/{user_str_id}/favorites", params={"page": page, "limit": 20})
+        result = await ling_api.get(f"/users/{user_str_id}/favorites", version="v1", params={"page": page, "limit": 20})
     else:
         if not token:
             return make_list_response([], 0, page, 20)
-        # 灵API需要userId参数
-        result = await ling_api.get("/users/favorites", token=token, params={"page": page, "limit": 20})
+        result = await ling_api.get("/users/favorites", version="v1", token=token, params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -487,8 +470,7 @@ async def user_history(request: Request, page: int = 1):
     if not token:
         return make_list_response([], 0, page, 20)
     
-    # 灵API需要userId参数
-    result = await ling_api.get("/users/history", token=token, params={"page": page, "limit": 20})
+    result = await ling_api.get("/users/history", version="v1", token=token, params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -509,7 +491,7 @@ async def user_history(request: Request, page: int = 1):
 @app.get("/api/user/more")
 async def user_more(id: int):
     user_str_id = id_mapper.to_string(id)
-    result = await ling_api.get(f"/users/{user_str_id}")
+    result = await ling_api.get(f"/users/{user_str_id}", version="v1")
     
     if not result.get("success"):
         # 灵API失败时返回空对象，不返回-1避免APK报错
@@ -541,7 +523,7 @@ async def user_login_history(request: Request, page: int = 1):
     if not token:
         return make_list_response([], 0, page, 20)
     
-    result = await ling_api.get("/users/login-history", token=token, params={"page": page, "limit": 20})
+    result = await ling_api.get("/users/login-history", version="v1", token=token, params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -567,9 +549,9 @@ async def user_login_history(request: Request, page: int = 1):
 @app.get("/api/user/send_forget")
 async def user_send_forget(qq: Optional[str] = None, email: Optional[str] = None):
     if qq:
-        result = await ling_api.post("/auth/forgot-password", data={"qq": qq})
+        result = await ling_api.post("/auth/forgot-password", version="v1", data={"qq": qq})
     elif email:
-        result = await ling_api.post("/auth/forgot-password", data={"email": email})
+        result = await ling_api.post("/auth/forgot-password", version="v1", data={"email": email})
     else:
         return make_response(None, -1, "请输入QQ或邮箱")
     
@@ -587,7 +569,7 @@ async def user_check_forget(request: Request):
     code = body.get("code", "")
     password = body.get("password", "")
     
-    result = await ling_api.post("/auth/reset-password", data={
+    result = await ling_api.post("/auth/reset-password", version="v1", data={
         "userId": user_id,
         "code": code,
         "newPassword": password
@@ -604,7 +586,7 @@ async def user_check_forget(request: Request):
 @app.get("/api/reply/list")
 async def reply_list(appid: int, page: int = 1):
     app_str_id = id_mapper.to_string(appid)
-    result = await ling_api.get(f"/apps/{app_str_id}/comments", params={"page": page, "limit": 20})
+    result = await ling_api.get(f"/apps/{app_str_id}/comments", version="v1", params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -620,7 +602,7 @@ async def reply_list(appid: int, page: int = 1):
 @app.get("/api/reply/children")
 async def reply_children(fatherid: int, page: int = 1):
     reply_str_id = id_mapper.to_string(fatherid)
-    result = await ling_api.get(f"/comments/{reply_str_id}/replies", params={"page": page, "limit": 20})
+    result = await ling_api.get(f"/comments/{reply_str_id}/replies", version="v1", params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -639,7 +621,7 @@ async def reply_mine(request: Request, page: int = 1):
     if not token:
         return make_list_response([], 0, page, 20)
     
-    result = await ling_api.get("/comments/mine", token=token, params={"page": page, "limit": 20})
+    result = await ling_api.get("/comments/mine", version="v1", token=token, params={"page": page, "limit": 20})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -655,7 +637,7 @@ async def reply_mine(request: Request, page: int = 1):
 @app.get("/api/reply/get")
 async def reply_get(replyid: int):
     reply_str_id = id_mapper.to_string(replyid)
-    result = await ling_api.get(f"/comments/{reply_str_id}")
+    result = await ling_api.get(f"/comments/{reply_str_id}", version="v1")
     
     if not result.get("success"):
         return make_response(None, -1, "评论不存在")
@@ -684,12 +666,14 @@ async def reply_send(request: Request):
         father_str_id = id_mapper.to_string(fatherid)
         result = await ling_api.post(
             f"/comments/{father_str_id}/replies",
+            version="v1",
             token=token,
             data={"content": content}
         )
     else:
         result = await ling_api.post(
             f"/apps/{app_str_id}/comments",
+            version="v1",
             token=token,
             data={"content": content}
         )
@@ -710,7 +694,7 @@ async def reply_delete(request: Request, id: int):
         return make_response(None, -1, "未登录")
     
     reply_str_id = id_mapper.to_string(id)
-    result = await ling_api.delete(f"/comments/{reply_str_id}", token=token)
+    result = await ling_api.delete(f"/comments/{reply_str_id}", version="v1", token=token)
     
     if not result.get("success"):
         return make_response(None, -1, "删除失败")
@@ -754,7 +738,7 @@ async def review_create(request: Request):
     content = body.get("content", "")
     
     app_str_id = id_mapper.to_string(appid)
-    result = await ling_api.post(f"/apps/{app_str_id}/comments", token=token, data={
+    result = await ling_api.post(f"/apps/{app_str_id}/comments", version="v1", token=token, data={
         "content": content,
         "rating": rating,
     })
@@ -774,7 +758,7 @@ async def review_delete(request: Request, id: int):
         return make_response(None, -1, "未登录")
     
     str_id = id_mapper.to_string(id)
-    result = await ling_api.delete(f"/comments/{str_id}", token=token)
+    result = await ling_api.delete(f"/comments/{str_id}", version="v1", token=token)
     
     if not result.get("success"):
         return make_response(None, -1, "删除失败")
@@ -812,7 +796,7 @@ async def market_info(request: Request):
 
 @app.get("/api/leaderboard/app_download")
 async def leaderboard_app_download(page: int = 1):
-    result = await ling_api.get("/apps", params={"page": page, "limit": 20, "sort": "downloads", "order": "desc"})
+    result = await ling_api.get("/apps", version="v1", params={"page": page, "limit": 20, "sort": "downloads", "order": "desc"})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -827,7 +811,7 @@ async def leaderboard_app_download(page: int = 1):
 
 @app.get("/api/leaderboard/user_upload")
 async def leaderboard_user_upload(page: int = 1):
-    result = await ling_api.get("/users", params={"page": page, "limit": 20, "sort": "uploadCount", "order": "desc"})
+    result = await ling_api.get("/users", version="v1", params={"page": page, "limit": 20, "sort": "uploadCount", "order": "desc"})
     
     if not result.get("success"):
         return make_list_response([], 0, page, 20)
@@ -848,7 +832,7 @@ async def user_put_privacy(request: Request, pub_favourite: Optional[int] = None
     if not token:
         return make_response(None, -1, "未登录")
     
-    result = await ling_api.put("/users/privacy", token=token, data={
+    result = await ling_api.put("/users/privacy", version="v1", token=token, data={
         "pubFavourite": bool(pub_favourite) if pub_favourite is not None else None,
     })
     
