@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Header, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, Any
+from datetime import datetime
 import json
 
 from config import settings
@@ -60,6 +61,18 @@ async def parse_form_body(request: Request) -> dict:
 @app.get("/api")
 async def api_root():
     return make_response({"version": "1.0", "service": "xian-ling-adapter"})
+
+@app.get("/api/debug")
+async def debug(request: Request):
+    """调试接口：查看收到的请求头和token提取结果"""
+    user_agent = request.headers.get("user-agent", "")
+    token = extract_token(request)
+    return {
+        "user_agent": user_agent,
+        "has_token": bool(token),
+        "token_preview": token[:30] + "..." if token else "EMPTY",
+        "all_headers": dict(request.headers),
+    }
 
 # ============ 应用相关接口 ============
 
@@ -464,6 +477,98 @@ async def user_history(request: Request, page: int = 1):
             apps.append(map_app_to_old(app))
     
     return make_list_response(apps, total, page, 20)
+
+@app.get("/api/user/more")
+async def user_more(id: int):
+    user_str_id = id_mapper.to_string(id)
+    result = await ling_api.get(f"/users/{user_str_id}")
+    
+    if not result.get("success"):
+        return make_response(None, -1, "用户不存在")
+    
+    data = result.get("data", {})
+    user_data = data.get("user", data)
+    stats = data.get("stats", {})
+    mapped = map_user_to_old(user_data)
+    if stats:
+        mapped["upload_count"] = stats.get("approvedAppsCount", 0)
+        mapped["reply_count"] = stats.get("commentsCount", 0)
+    return make_response(mapped)
+
+def _parse_iso_time(iso_str: Optional[str]) -> int:
+    if not iso_str:
+        return 0
+    try:
+        if iso_str.endswith('Z'):
+            iso_str = iso_str[:-1] + '+00:00'
+        dt = datetime.fromisoformat(iso_str)
+        return int(dt.timestamp() * 1000)
+    except:
+        return 0
+
+@app.get("/api/user/login_history")
+async def user_login_history(request: Request, page: int = 1):
+    token = extract_token(request)
+    if not token:
+        return make_list_response([], 0, page, 20)
+    
+    result = await ling_api.get("/users/login-history", token=token, params={"page": page, "pageSize": 20})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    items = data.get("items", data.get("history", []))
+    pagination = data.get("pagination", {})
+    total = pagination.get("total", len(items))
+    
+    history_list = []
+    for item in items:
+        if isinstance(item, dict):
+            history_list.append({
+                "id": id_mapper.to_int(item.get("_id", "")),
+                "device": item.get("device", ""),
+                "ip": item.get("ip", ""),
+                "time": _parse_iso_time(item.get("createdAt")),
+                "location": item.get("location", ""),
+            })
+    
+    return make_list_response(history_list, total, page, 20)
+
+@app.get("/api/user/send_forget")
+async def user_send_forget(qq: Optional[str] = None, email: Optional[str] = None):
+    if qq:
+        result = await ling_api.post("/auth/forgot-password", data={"qq": qq})
+    elif email:
+        result = await ling_api.post("/auth/forgot-password", data={"email": email})
+    else:
+        return make_response(None, -1, "请输入QQ或邮箱")
+    
+    if not result.get("success"):
+        msg = result.get("error", "发送失败")
+        return make_response(None, -1, msg)
+    
+    return make_response(None, 0, "发送成功")
+
+@app.post("/api/user/check_forget")
+async def user_check_forget(request: Request):
+    body = await parse_form_body(request)
+    
+    user_id = body.get("id", "")
+    code = body.get("code", "")
+    password = body.get("password", "")
+    
+    result = await ling_api.post("/auth/reset-password", data={
+        "userId": user_id,
+        "code": code,
+        "newPassword": password
+    })
+    
+    if not result.get("success"):
+        msg = result.get("error", "修改失败")
+        return make_response(None, -1, msg)
+    
+    return make_response(True)
 
 # ============ 评论相关接口 ============
 
