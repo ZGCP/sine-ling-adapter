@@ -108,7 +108,7 @@ def map_app_to_old(ling_app: Dict[str, Any]) -> Dict[str, Any]:
                 "icon": "",
             })
     
-    uploader = ling_app.get("uploader") or ling_app.get("owner_info") or {}
+    uploader = ling_app.get("owner") or ling_app.get("uploader") or ling_app.get("owner_info") or {}
     uploader_name = ""
     if isinstance(uploader, dict):
         uploader_name = uploader.get("nickname", "") or uploader.get("username", "")
@@ -154,13 +154,13 @@ def map_app_detail_to_old(ling_detail: Dict[str, Any]) -> Dict[str, Any]:
     app = ling_detail.get("app", ling_detail)
     base = map_app_to_old(app)
     
-    uploader = app.get("uploader") or app.get("owner_info") or {}
+    uploader = app.get("owner") or app.get("uploader") or app.get("owner_info") or {}
     if isinstance(uploader, dict):
         base["user"] = {
             "id": id_mapper.to_int(uploader.get("_id", "")),
             "username": uploader.get("username", ""),
             "display_name": uploader.get("nickname", "") or uploader.get("username", ""),
-            "user_avatar": uploader.get("avatarUrl", ""),
+            "user_avatar": uploader.get("avatarUrl", "") or "",
         }
     
     versions = app.get("versions", [])
