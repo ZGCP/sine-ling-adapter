@@ -40,56 +40,111 @@ def map_app_to_old(ling_app: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     category = ling_app.get("category", "")
-    category_map = {
-        "Social": 1,
-        "Games": 2,
-        "Tools": 3,
-        "Media": 4,
-        "News": 5,
-        "Personalization": 6,
-        "Productivity": 7,
-        "Education": 8,
-        "Lifestyle": 9,
-        "Finance": 10,
-        "Health": 11,
-        "Sports": 12,
-        "Shopping": 13,
-        "Travel": 14,
-        "Music": 15,
-        "Video": 16,
-        "Photography": 17,
-        "Books": 18,
-        "Business": 19,
-        "Weather": 20,
+    category_display_map = {
+        "Social": "社交",
+        "Games": "游戏",
+        "Tools": "工具",
+        "Media": "影音",
+        "News": "新闻",
+        "Personalization": "个性",
+        "Productivity": "办公",
+        "Education": "教育",
+        "Lifestyle": "生活",
+        "Finance": "金融",
+        "Health": "健康",
+        "Sports": "运动",
+        "Shopping": "购物",
+        "Travel": "旅行",
+        "Music": "音乐",
+        "Video": "视频",
+        "Photography": "摄影",
+        "Books": "阅读",
+        "Business": "商务",
+        "Weather": "天气",
     }
-    app_type = category_map.get(category, 0)
+    app_type_str = category_display_map.get(category, category or "其他")
+    
+    version_type_map = {
+        "release": "正式版",
+        "beta": "测试版",
+        "alpha": "内测版",
+    }
+    version_type = ling_app.get("versionType", "") or ling_app.get("releaseType", "")
+    app_version_type_str = version_type_map.get(version_type, "正式版")
+    
+    app_size = ling_app.get("size", 0) or ling_app.get("apkSize", 0)
+    if isinstance(app_size, (int, float)) and app_size > 0:
+        if app_size > 1048576:
+            download_size = f"{app_size / 1048576:.1f} MB"
+        elif app_size > 1024:
+            download_size = f"{app_size / 1024:.1f} KB"
+        else:
+            download_size = f"{app_size} B"
+    else:
+        download_size = "0 B"
+    
+    is_wear_os = ling_app.get("isWearOS", False) or ling_app.get("wearOS", False)
+    app_is_wearos = 1 if is_wear_os else 0
+    
+    screenshots = ling_app.get("screenshotKeys", []) or ling_app.get("screenshots", [])
+    if not isinstance(screenshots, list):
+        screenshots = []
+    
+    tags_raw = ling_app.get("tags", [])
+    if not isinstance(tags_raw, list):
+        tags_raw = []
+    tag_list = []
+    for i, tag in enumerate(tags_raw):
+        if isinstance(tag, dict):
+            tag_list.append({
+                "id": id_mapper.to_int(tag.get("_id", str(i))),
+                "name": tag.get("name", tag.get("displayName", str(tag))),
+                "icon": tag.get("icon", ""),
+            })
+        elif isinstance(tag, str):
+            tag_list.append({
+                "id": i + 1,
+                "name": tag,
+                "icon": "",
+            })
+    
+    uploader = ling_app.get("uploader") or ling_app.get("owner_info") or {}
+    uploader_name = ""
+    if isinstance(uploader, dict):
+        uploader_name = uploader.get("nickname", "") or uploader.get("username", "")
     
     return {
         "id": int_id,
-        "_id": string_id,
         "package_name": ling_app.get("packageName", ""),
         "app_name": ling_app.get("name", ""),
         "version_code": ling_app.get("versionCode", 0),
         "version_name": ling_app.get("versionName", ""),
         "app_icon": ling_app.get("iconUrl", "") or ling_app.get("logoUrl", ""),
-        "app_type": app_type,
-        "app_version_type": 0,
+        "app_type": app_type_str,
+        "app_version_type": app_version_type_str,
         "app_abi": abi_int,
-        "app_sdk_min": ling_app.get("minSdk", 0),
+        "app_describe": ling_app.get("description", ""),
+        "app_update_log": ling_app.get("changelog", "") or ling_app.get("updateLog", "") or "",
+        "upload_message": "",
+        "app_developer": ling_app.get("developer", "") or uploader_name,
+        "app_source": "灵应用商店",
         "audit_status": status_map.get(ling_app.get("status", "active"), 1),
-        "version_count": 1,
-        "app_size": ling_app.get("size", 0) or ling_app.get("apkSize", 0),
+        "audit_reason": ling_app.get("rejectReason", "") or "",
+        "app_sdk_min": ling_app.get("minSdk", 0),
+        "app_sdk_target": ling_app.get("targetSdk", 0),
+        "app_is_wearos": app_is_wearos,
+        "download_size": download_size,
         "download_count": ling_app.get("downloads", 0),
-        "rating": ling_app.get("rating", 0),
-        "rating_count": ling_app.get("ratingCount", 0),
-        "description": ling_app.get("description", ""),
-        "create_time": _parse_iso_time(ling_app.get("createdAt")),
+        "upload_time": _parse_iso_time(ling_app.get("createdAt")),
         "update_time": _parse_iso_time(ling_app.get("updatedAt")),
-        "owner": ling_app.get("owner", ""),
-        "is_apks": ling_app.get("isApks", False),
-        "tags": ling_app.get("tags", []),
-        "screenshots": ling_app.get("screenshotKeys", []),
-        "target_sdk": ling_app.get("targetSdk", 0),
+        "is_favourite": 0,
+        "favourite_count": ling_app.get("favoritesCount", 0) or ling_app.get("favoriteCount", 0) or 0,
+        "average_rating": float(ling_app.get("rating", 0) or 0),
+        "review_count": ling_app.get("reviewCount", 0) or ling_app.get("commentCount", 0) or 0,
+        "app_previews": screenshots,
+        "tags": tag_list,
+        "app_version": ling_app.get("versionName", ""),
+        "official": 0,
     }
 
 def map_app_detail_to_old(ling_detail: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,38 +154,19 @@ def map_app_detail_to_old(ling_detail: Dict[str, Any]) -> Dict[str, Any]:
     app = ling_detail.get("app", ling_detail)
     base = map_app_to_old(app)
     
-    base["download_lines"] = app.get("downloadLines", [])
-    base["supported_devices"] = app.get("supportedDevices", [])
-    base["supported_languages"] = app.get("supportedLanguages", [])
-    base["supported_densities"] = app.get("supportedDensities", [])
-    base["is_wear_os"] = app.get("isWearOS", False)
-    base["apk_key"] = app.get("apkKey", "")
-    base["variant_key"] = app.get("variantKey", "")
-    base["icon_key"] = app.get("iconKey", "")
-    base["logo_key"] = app.get("logoKey", "")
-    
     uploader = app.get("uploader") or app.get("owner_info") or {}
     if isinstance(uploader, dict):
-        base["uploader"] = {
+        base["user"] = {
             "id": id_mapper.to_int(uploader.get("_id", "")),
             "username": uploader.get("username", ""),
-            "nickname": uploader.get("nickname", ""),
-            "avatar": uploader.get("avatarUrl", ""),
+            "display_name": uploader.get("nickname", "") or uploader.get("username", ""),
+            "user_avatar": uploader.get("avatarUrl", ""),
         }
     
     versions = app.get("versions", [])
     if versions:
-        base["version_count"] = len(versions)
-        base["versions"] = [
-            {
-                "id": id_mapper.to_int(v.get("_id", "")),
-                "version_code": v.get("versionCode", 0),
-                "version_name": v.get("versionName", ""),
-                "size": v.get("size", 0),
-                "create_time": _parse_iso_time(v.get("createdAt")),
-            }
-            for v in versions
-        ]
+        base["old_version_code"] = versions[-1].get("versionCode", 0) if len(versions) > 1 else 0
+        base["old_version_name"] = versions[-1].get("versionName", "") if len(versions) > 1 else ""
     
     return base
 
