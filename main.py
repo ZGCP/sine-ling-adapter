@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Request, Header, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Dict, Any
+from fastapi.responses import StreamingResponse
 from datetime import datetime
 import json
+import httpx
+from typing import Optional, Dict, Any
 
 from config import settings
 from ling_client import ling_api
@@ -162,16 +164,77 @@ async def download_app(appid: int, request: Request):
     token = extract_token(request)
     app_str_id = id_mapper.to_string(appid)
     
-    # 参考 lingdate 的下载URL格式: /download/{appId}?token={token}
+    # 返回适配层代理下载URL，确保token正确传递
+    base_url = str(request.base_url).rstrip('/')
     if token:
-        download_url = f"{settings.LING_DOWNLOAD_BASE}/download/{app_str_id}?token={token}"
+        download_url = f"{base_url}/api/download/proxy/{app_str_id}?token={token}"
     else:
-        download_url = f"{settings.LING_DOWNLOAD_BASE}/download/{app_str_id}"
+        download_url = f"{base_url}/api/download/proxy/{app_str_id}"
     
     lines = [
         {"id": 1, "name": "官方线路", "url": download_url},
     ]
     return make_response(lines)
+
+@app.get("/api/download/proxy/{app_id}")
+async def download_proxy(app_id: str, request: Request):
+    """代理下载APK文件，处理灵API的token认证和重定向"""
+    from fastapi import Response
+    
+    token = request.query_params.get("token", "")
+    if not token:
+        token = extract_token(request)
+    
+    ling_url = f"{settings.LING_DOWNLOAD_BASE}/download/{app_id}"
+    if token:
+        ling_url += f"?token={token}"
+    
+    client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
+    
+    try:
+        req = client.build_request("GET", ling_url)
+        resp = await client.send(req, stream=True)
+        
+        if resp.status_code != 200:
+            await resp.aclose()
+            await client.aclose()
+            return Response(content=f'{{"code":-1,"msg":"download failed: HTTP {resp.status_code}"}}', 
+                          status_code=resp.status_code, 
+                          media_type="application/json")
+        
+        # 获取文件名
+        content_disposition = resp.headers.get("content-disposition", "")
+        filename = f"{app_id}.apk"
+        if "filename=" in content_disposition:
+            filename = content_disposition.split("filename=")[-1].strip('"').strip("'")
+        
+        content_type = resp.headers.get("content-type", "application/vnd.android.package-archive")
+        content_length = resp.headers.get("content-length", "")
+        
+        async def stream_content():
+            try:
+                async for chunk in resp.aiter_bytes(8192):
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+        if content_length:
+            headers["Content-Length"] = content_length
+        
+        return StreamingResponse(
+            stream_content(),
+            media_type=content_type,
+            headers=headers,
+        )
+    except Exception as e:
+        await client.aclose()
+        return Response(content=f'{{"code":-1,"msg":"download failed: {str(e)}"}}', 
+                      status_code=500, 
+                      media_type="application/json")
 
 @app.get("/api/download/app_share")
 async def app_share(appid: int):
