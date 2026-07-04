@@ -27,6 +27,15 @@ async def shutdown():
     await ling_api.close()
 
 def extract_token(request: Request) -> Optional[str]:
+    # 弦APK把Token放在User-Agent里：SineMarket:xxx;Device:xxx;Hash:xxx;Token:实际token
+    user_agent = request.headers.get("user-agent", "")
+    if "Token:" in user_agent:
+        parts = user_agent.split("Token:")
+        if len(parts) > 1:
+            token = parts[1].strip()
+            if token:
+                return token
+    # 兼容标准Authorization头
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:]
@@ -36,6 +45,17 @@ def extract_token(request: Request) -> Optional[str]:
     if token:
         return token
     return None
+
+async def parse_form_body(request: Request) -> dict:
+    """解析请求体，支持JSON和form-urlencoded格式"""
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        return dict(form)
+    try:
+        return await request.json()
+    except:
+        return {}
 
 @app.get("/api")
 async def api_root():
@@ -145,23 +165,29 @@ async def app_share(appid: int):
 
 @app.post("/api/app/check")
 async def app_check(request: Request):
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
-    packages = body.get("packages", body.get("list", []))
+    # 弦APK发送 local_list=URL编码的JSON数组
+    local_list = body.get("local_list", "")
+    if local_list:
+        try:
+            packages = json.loads(local_list) if isinstance(local_list, str) else local_list
+        except:
+            packages = []
+    else:
+        packages = body.get("packages", body.get("list", []))
+    
     result_packages = []
     
     for pkg in packages:
         pkg_name = pkg.get("package_name", pkg.get("packageName", ""))
-        old_version = pkg.get("old_version_code", pkg.get("versionCode", 0))
+        old_version = int(pkg.get("version_code", pkg.get("versionCode", 0)))
         
         resp = await ling_api.get(f"/apps/package/{pkg_name}")
         if resp.get("success"):
             data = resp.get("data", {})
             app_data = data.get("app", data)
-            if app_data and app_data.get("versionCode", 0) > old_version:
+            if app_data and int(app_data.get("versionCode", 0)) > old_version:
                 result_packages.append({
                     "package_name": pkg_name,
                     "version_code": app_data.get("versionCode", 0),
@@ -172,7 +198,8 @@ async def app_check(request: Request):
                     "size": app_data.get("size", 0),
                 })
     
-    return make_response(result_packages)
+    # 弦APK用 getJSONObject("data") 取结果
+    return make_response({"list": result_packages})
 
 # ============ 分类/标签相关接口 ============
 
@@ -226,10 +253,7 @@ async def page_info(id: int):
 
 @app.post("/api/user/login")
 async def user_login(request: Request):
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
     username = body.get("username", body.get("user", ""))
     password = body.get("password", "")
@@ -241,18 +265,23 @@ async def user_login(request: Request):
     
     data = result.get("data", {})
     token = data.get("token", "")
-    user_data = data.get("user", {})
     
+    # 弦APK用 getString("data") 取token，所以data必须是纯字符串
     return make_response(token)
 
 @app.post("/api/user/register")
 async def user_register(request: Request):
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
-    result = await ling_api.post("/auth/register", data=body)
+    username = body.get("username", "")
+    password = body.get("password", "")
+    qq = body.get("qq", "")
+    
+    register_data = {"username": username, "password": password}
+    if qq:
+        register_data["qq"] = qq
+    
+    result = await ling_api.post("/auth/register", data=register_data)
     
     if not result.get("success"):
         msg = result.get("data", {}).get("message", "注册失败")
@@ -299,17 +328,22 @@ async def user_edit(request: Request):
     if not token:
         return make_response(None, -1, "未登录")
     
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
-    result = await ling_api.put("/users/profile", token=token, data=body)
+    # 弦APK发送 displayname 和 describe
+    edit_data = {}
+    if body.get("displayname"):
+        edit_data["nickname"] = body["displayname"]
+    if body.get("describe"):
+        edit_data["description"] = body["describe"]
+    
+    result = await ling_api.put("/users/profile", token=token, data=edit_data)
     
     if not result.get("success"):
         return make_response(None, -1, "修改失败")
     
-    return make_response(None, 0, "修改成功")
+    # 弦APK用 getBoolean("data") 判断成功
+    return make_response(True)
 
 @app.post("/api/user/password")
 async def user_password(request: Request):
@@ -317,17 +351,22 @@ async def user_password(request: Request):
     if not token:
         return make_response(None, -1, "未登录")
     
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
-    result = await ling_api.put("/users/password", token=token, data=body)
+    # 弦APK发送 old 和 new
+    old_password = body.get("old", "")
+    new_password = body.get("new", "")
+    
+    result = await ling_api.put("/users/password", token=token, data={
+        "currentPassword": old_password,
+        "newPassword": new_password
+    })
     
     if not result.get("success"):
         return make_response(None, -1, "修改失败")
     
-    return make_response(None, 0, "修改成功")
+    # 弦APK用 getBoolean("data") 判断成功
+    return make_response(True)
 
 @app.get("/api/user/search")
 async def user_search(keyword: str, page: int = 1):
@@ -498,14 +537,12 @@ async def reply_send(request: Request):
     if not token:
         return make_response(None, -1, "未登录")
     
-    try:
-        body = await request.json()
-    except:
-        body = {}
+    body = await parse_form_body(request)
     
-    appid = body.get("app_id", body.get("appid", 0))
+    # 弦APK发送 appid, content, father (都是form-urlencoded)
+    appid = int(body.get("appid", body.get("app_id", 0)))
     content = body.get("content", "")
-    fatherid = body.get("father_reply_id", body.get("fatherid", 0))
+    fatherid = int(body.get("father", body.get("father_reply_id", 0)))
     
     app_str_id = id_mapper.to_string(appid)
     
@@ -526,10 +563,11 @@ async def reply_send(request: Request):
     if not result.get("success"):
         return make_response(None, -1, "发表失败")
     
+    # 弦APK用 optInt("data") 取评论ID
     data = result.get("data", {})
     comment = data.get("comment", data)
-    mapped = map_comment_to_old(comment)
-    return make_response(mapped)
+    comment_id = id_mapper.to_int(comment.get("_id", "")) if isinstance(comment, dict) else 0
+    return make_response(comment_id)
 
 @app.get("/api/reply/delete")
 async def reply_delete(request: Request, id: int):
