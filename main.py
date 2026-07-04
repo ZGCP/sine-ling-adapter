@@ -9,6 +9,7 @@ from ling_client import ling_api
 from mappers import (
     map_app_to_old, map_app_detail_to_old, map_user_to_old,
     map_comment_to_old, map_category_to_old, map_collection_to_old,
+    map_review_to_old, map_notice_to_old,
     make_response, make_list_response
 )
 from id_mapper import id_mapper
@@ -105,7 +106,17 @@ async def app_list(
         app_str_id = id_mapper.to_string(appid)
         result = await ling_api.get(f"/apps/{app_str_id}/related")
     elif type:
-        params["category"] = type
+        # V2.3.6 传的 type 是中文分类名，需要反向映射成英文
+        cn_to_en = {
+            "社交": "Social", "游戏": "Games", "工具": "Tools", "影音": "Media",
+            "新闻": "News", "个性": "Personalization", "办公": "Productivity",
+            "教育": "Education", "生活": "Lifestyle", "金融": "Finance",
+            "健康": "Health", "运动": "Sports", "购物": "Shopping", "旅行": "Travel",
+            "音乐": "Music", "视频": "Video", "摄影": "Photography", "阅读": "Books",
+            "商务": "Business", "天气": "Weather",
+        }
+        en_category = cn_to_en.get(type, type)
+        params["category"] = en_category
         result = await ling_api.get("/apps", params=params)
     elif time:
         params["sort"] = "createdAt"
@@ -161,14 +172,38 @@ async def app_more(appid: int, page: int = 1):
 async def download_app(appid: int, request: Request):
     token = extract_token(request)
     app_str_id = id_mapper.to_string(appid)
-    result = await ling_api.get(f"/apps/{app_str_id}/download", token=token)
+    
+    # 先获取应用详情，拿到下载链接
+    result = await ling_api.get(f"/apps/{app_str_id}", token=token)
     
     if not result.get("success"):
         return make_response(None, -1, "获取下载链接失败")
     
     data = result.get("data", {})
-    download_url = data.get("downloadUrl", data.get("url", ""))
-    return make_response({"download_url": download_url})
+    app_data = data.get("app", data)
+    
+    # 灵API只有一个下载链接，构造路线列表
+    download_url = app_data.get("downloadUrl", "") or app_data.get("apkUrl", "") or app_data.get("url", "")
+    apk_key = app_data.get("apkKey", "")
+    
+    # 如果没有直接下载链接，尝试用apkKey构造
+    if not download_url and apk_key:
+        download_url = f"https://market.ziling.xin/api/v2/files/{apk_key}"
+    
+    if not download_url:
+        return make_response(None, -1, "下载链接不存在")
+    
+    # V2.3.6 期望 data 是 JSONArray，每项含 id/name/url
+    lines = [
+        {"id": 1, "name": "官方线路", "url": download_url},
+    ]
+    
+    # 如果有备用链接，添加更多线路
+    mirror_url = app_data.get("mirrorUrl", "") or app_data.get("backupUrl", "")
+    if mirror_url:
+        lines.append({"id": 2, "name": "备用线路", "url": mirror_url})
+    
+    return make_response(lines)
 
 @app.get("/api/download/app_share")
 async def app_share(appid: int):
@@ -484,7 +519,8 @@ async def user_more(id: int):
     result = await ling_api.get(f"/users/{user_str_id}")
     
     if not result.get("success"):
-        return make_response(None, -1, "用户不存在")
+        # 灵API失败时返回空对象，不返回-1避免APK报错
+        return make_response({})
     
     data = result.get("data", {})
     user_data = data.get("user", data)
@@ -687,6 +723,224 @@ async def reply_delete(request: Request, id: int):
         return make_response(None, -1, "删除失败")
     
     return make_response(None, 0, "删除成功")
+
+# ============ 通知相关接口 ============
+
+@app.get("/api/notice/list")
+async def notice_list(request: Request, page: int = 1):
+    token = extract_token(request)
+    if not token:
+        return make_list_response([], 0, page, 20)
+    
+    # 灵API可能没有通知接口，返回空列表
+    result = await ling_api.get("/notifications", token=token, params={"page": page, "pageSize": 20})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    if isinstance(data, list):
+        items = data
+    else:
+        items = data.get("items", data.get("notifications", []))
+    pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+    total = pagination.get("total", len(items))
+    
+    mapped = [map_notice_to_old(n) for n in items if isinstance(n, dict)]
+    return make_list_response(mapped, total, page, 20)
+
+# ============ 评分相关接口 ============
+
+@app.get("/api/review/list")
+async def review_list(appid: int, page: int = 1):
+    app_str_id = id_mapper.to_string(appid)
+    result = await ling_api.get(f"/apps/{app_str_id}/reviews", params={"page": page, "pageSize": 20})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    items = data.get("items", data.get("reviews", []))
+    pagination = data.get("pagination", {})
+    total = pagination.get("total", len(items))
+    
+    mapped = [map_review_to_old(r) for r in items if isinstance(r, dict)]
+    return make_list_response(mapped, total, page, 20)
+
+@app.get("/api/review/mine")
+async def review_mine(request: Request, page: int = 1):
+    token = extract_token(request)
+    if not token:
+        return make_list_response([], 0, page, 20)
+    
+    result = await ling_api.get("/reviews/mine", token=token, params={"page": page, "pageSize": 20})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    items = data.get("items", data.get("reviews", []))
+    pagination = data.get("pagination", {})
+    total = pagination.get("total", len(items))
+    
+    mapped = [map_review_to_old(r) for r in items if isinstance(r, dict)]
+    return make_list_response(mapped, total, page, 20)
+
+@app.get("/api/review/detail")
+async def review_detail(reviewid: int):
+    str_id = id_mapper.to_string(reviewid)
+    result = await ling_api.get(f"/reviews/{str_id}")
+    
+    if not result.get("success"):
+        return make_response(None, -1, "评分不存在")
+    
+    data = result.get("data", {})
+    review = data.get("review", data)
+    mapped = map_review_to_old(review)
+    return make_response(mapped)
+
+@app.post("/api/review/create")
+async def review_create(request: Request):
+    token = extract_token(request)
+    if not token:
+        return make_response(None, -1, "未登录")
+    
+    body = await parse_form_body(request)
+    appid = int(body.get("appid", body.get("app_id", 0)))
+    rating = int(body.get("rating", 0))
+    content = body.get("content", "")
+    
+    app_str_id = id_mapper.to_string(appid)
+    result = await ling_api.post(f"/apps/{app_str_id}/reviews", token=token, data={
+        "rating": rating,
+        "content": content,
+    })
+    
+    if not result.get("success"):
+        return make_response(None, -1, "评分失败")
+    
+    data = result.get("data", {})
+    review = data.get("review", data)
+    review_id = id_mapper.to_int(review.get("_id", "")) if isinstance(review, dict) else 0
+    return make_response(review_id)
+
+@app.get("/api/review/delete")
+async def review_delete(request: Request, id: int):
+    token = extract_token(request)
+    if not token:
+        return make_response(None, -1, "未登录")
+    
+    str_id = id_mapper.to_string(id)
+    result = await ling_api.delete(f"/reviews/{str_id}", token=token)
+    
+    if not result.get("success"):
+        return make_response(None, -1, "删除失败")
+    
+    return make_response(None, 0, "删除成功")
+
+@app.post("/api/review/vote")
+async def review_vote(request: Request):
+    token = extract_token(request)
+    if not token:
+        return make_response(None, -1, "未登录")
+    
+    body = await parse_form_body(request)
+    reviewid = int(body.get("reviewid", body.get("review_id", 0)))
+    vote_type = int(body.get("vote_type", body.get("voteType", 0)))
+    
+    str_id = id_mapper.to_string(reviewid)
+    result = await ling_api.post(f"/reviews/{str_id}/vote", token=token, data={
+        "voteType": vote_type,
+    })
+    
+    if not result.get("success"):
+        return make_response(None, -1, "投票失败")
+    
+    return make_response(True)
+
+@app.post("/api/review/cancel_vote")
+async def review_cancel_vote(request: Request):
+    token = extract_token(request)
+    if not token:
+        return make_response(None, -1, "未登录")
+    
+    body = await parse_form_body(request)
+    reviewid = int(body.get("reviewid", body.get("review_id", 0)))
+    
+    str_id = id_mapper.to_string(reviewid)
+    result = await ling_api.delete(f"/reviews/{str_id}/vote", token=token)
+    
+    if not result.get("success"):
+        return make_response(None, -1, "取消投票失败")
+    
+    return make_response(True)
+
+# ============ 市场信息/版本检查接口 ============
+
+@app.get("/api/market")
+async def market_info(request: Request):
+    return make_response({
+        "maintenance": False,
+        "maintenance_msg": "",
+        "latest": {
+            "version_code": 20236,
+            "version_name": "2.3.6",
+            "update_time": 1767225600000,
+            "update_log": "当前为最新版本",
+            "download_url": "",
+        },
+        "actions": [],
+        "tip": "",
+    })
+
+# ============ 排行榜接口 ============
+
+@app.get("/api/leaderboard/app_download")
+async def leaderboard_app_download(page: int = 1):
+    result = await ling_api.get("/apps", params={"page": page, "pageSize": 20, "sort": "downloads", "order": "desc"})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    apps = data.get("apps", data.get("items", []))
+    pagination = data.get("pagination", {})
+    total = pagination.get("total", len(apps))
+    
+    mapped_apps = [map_app_to_old(a) for a in apps if isinstance(a, dict)]
+    return make_list_response(mapped_apps, total, page, 20)
+
+@app.get("/api/leaderboard/user_upload")
+async def leaderboard_user_upload(page: int = 1):
+    result = await ling_api.get("/users", params={"page": page, "pageSize": 20, "sort": "uploadCount", "order": "desc"})
+    
+    if not result.get("success"):
+        return make_list_response([], 0, page, 20)
+    
+    data = result.get("data", {})
+    users = data.get("users", data.get("items", []))
+    pagination = data.get("pagination", {})
+    total = pagination.get("total", len(users))
+    
+    mapped = [map_user_to_old(u) for u in users if isinstance(u, dict)]
+    return make_list_response(mapped, total, page, 20)
+
+# ============ 用户隐私设置接口 ============
+
+@app.get("/api/user/put_privacy")
+async def user_put_privacy(request: Request, pub_favourite: Optional[int] = None):
+    token = extract_token(request)
+    if not token:
+        return make_response(None, -1, "未登录")
+    
+    result = await ling_api.put("/users/privacy", token=token, data={
+        "pubFavourite": bool(pub_favourite) if pub_favourite is not None else None,
+    })
+    
+    if not result.get("success"):
+        return make_response(None, -1, "设置失败")
+    
+    return make_response(True)
 
 if __name__ == "__main__":
     import uvicorn
