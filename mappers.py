@@ -277,6 +277,58 @@ def map_category_to_old(ling_category: Dict[str, Any]) -> Dict[str, Any]:
         "is_active": ling_category.get("isActive", True),
     }
 
+def map_review_to_old(ling_review: Dict[str, Any]) -> Dict[str, Any]:
+    if not ling_review:
+        return {}
+    
+    string_id = ling_review.get("_id", "")
+    int_id = id_mapper.to_int(string_id)
+    
+    user = ling_review.get("user", {}) or ling_review.get("author", {})
+    if isinstance(user, dict):
+        user_info = {
+            "id": id_mapper.to_int(user.get("_id", "")),
+            "username": user.get("username", ""),
+            "display_name": user.get("nickname", "") or user.get("username", ""),
+            "user_avatar": user.get("avatarUrl", ""),
+        }
+    else:
+        user_info = {}
+    
+    app_id = ling_review.get("appId", "") or ling_review.get("app_id", "")
+    app_id_int = id_mapper.to_int(app_id) if app_id else 0
+    
+    return {
+        "id": int_id,
+        "app_id": app_id_int,
+        "app_version": ling_review.get("appVersion", "") or ling_review.get("version", ""),
+        "rating": ling_review.get("rating", 0),
+        "content": ling_review.get("content", ""),
+        "upvote_count": ling_review.get("upvoteCount", 0) or ling_review.get("likes", 0),
+        "downvote_count": ling_review.get("downvoteCount", 0) or ling_review.get("dislikes", 0),
+        "create_time": _parse_iso_time(ling_review.get("createdAt")),
+        "user_vote_type": ling_review.get("userVoteType", 0) or ling_review.get("voteType", 0),
+        "is_counted_in_rating": ling_review.get("isCounted", True),
+        "user": user_info,
+    }
+
+def map_notice_to_old(ling_notice: Dict[str, Any]) -> Dict[str, Any]:
+    if not ling_notice:
+        return {}
+    
+    string_id = ling_notice.get("_id", "")
+    int_id = id_mapper.to_int(string_id)
+    
+    return {
+        "id": int_id,
+        "title": ling_notice.get("title", ""),
+        "content": ling_notice.get("content", ""),
+        "desc": ling_notice.get("description", "") or ling_notice.get("summary", ""),
+        "actions": ling_notice.get("actions", []),
+        "time": _parse_iso_time(ling_notice.get("createdAt")) or _parse_iso_time(ling_notice.get("time")),
+        "read_status": ling_notice.get("readStatus", 0) or ling_notice.get("isRead", 0),
+    }
+
 def map_collection_to_old(ling_collection: Dict[str, Any]) -> Dict[str, Any]:
     if not ling_collection:
         return {}
